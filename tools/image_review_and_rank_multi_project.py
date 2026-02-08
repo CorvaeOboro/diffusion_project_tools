@@ -6,9 +6,7 @@ Supports animated webp with temp preview
 Set and Save Project settings
 
 TODO:
-- add a button near the top that will open file explorer to the current folder that is being viewed 
 - if the folder contains images that are vertical aspect ratio , then adjust the spacing . we dont really want to do this dynamiacally , instead we want to decide once on loading the folder , setting the spacing variable then . if a new folder is selected then the calculation occurs again .
-- add a button to view the "01" subfolder , the best of the best in the current folder, like a toggle
 """
 # ===========================================================================================
 import os
@@ -19,7 +17,7 @@ import shutil
 import subprocess
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QGridLayout, QScrollArea, QPushButton, QHBoxLayout,
-                             QLineEdit, QFileDialog, QCheckBox, QScrollBar, QFrame)
+                             QLineEdit, QFileDialog, QCheckBox, QScrollBar, QFrame, QSizePolicy)
 from PyQt5.QtGui import QPixmap, QMouseEvent, QFontMetrics, QImage, QMovie, QColor
 from PyQt5.QtCore import (Qt, QThreadPool, QRunnable, pyqtSignal, QObject,
                           QSize, QEvent, QRect, QPoint, QTimer)
@@ -349,7 +347,9 @@ class MainWindow(QMainWindow):
         for category in categories:
             button = QPushButton(category)
             button.clicked.connect(self.category_button_clicked)
-            self.category_layout.insertWidget(self.category_layout.count() - 1, button)
+            # Set size policy to expand vertically to fill available space
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            self.category_layout.insertWidget(self.category_layout.count() - 1, button, 1)  # stretch factor 1
             self.category_buttons.append(button)
 
         self.adjust_sizes()
@@ -394,7 +394,9 @@ class MainWindow(QMainWindow):
         for item in items:
             button = QPushButton(item)
             button.clicked.connect(self.item_button_clicked)
-            self.item_layout.insertWidget(self.item_layout.count() - 1, button)
+            # Set size policy to expand vertically to fill available space
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            self.item_layout.insertWidget(self.item_layout.count() - 1, button, 1)  # stretch factor 1
             self.item_buttons.append(button)
             self.item_buttons_dict[item] = button
 

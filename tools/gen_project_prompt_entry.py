@@ -4,16 +4,17 @@ GEN Input Prompt Entry UI for Diffusion Project
 A GUI tool for managing and organizing projects with multiple Stable Diffusion prompt files.
 a visual interface for prompt entry and review.
 
-    - Visual dashboard displaying asset PSD/PNG preview and their associated prompts in prompt subfolder
+    - Visual dashboard displaying item PSD/PNG preview and their associated prompts in prompt subfolder
     - prompt .md text files for :
-        * SDXL positive + negative , SD1.5 positive + negative  Flux , Video  , Florence2 generated 
+        * SDXL positive + negative , SD1.5 positive + negative  Flux , Video , Video Wan22 , Florence2 generated 
     - Support for both flat and hierarchical file organization
     - Supports PSD, PSB, and PNG files (PNG files can be used without a PSD if in item folder)
+    - Supports ITEM folders with only a prompt subfolder (no PSD/PNG required)
 
 TypeA Project Structure psds/pngs are in main folder :
     project_folder/
     ├── item_example.psd                     # Source PSD file (or .png)
-    ├── item_example/                        # Asset subfolder
+    ├── item_example/                        # Item subfolder
     │   ├── prompt/                          # Prompt files subfolder
     │   │   ├── prompt_sdxl.md               # SDXL positive prompts
     │   │   ├── prompt_sdxl_negative.md      # SDXL negative prompts
@@ -21,24 +22,33 @@ TypeA Project Structure psds/pngs are in main folder :
     │   │   ├── prompt_sd15_negative.md      # SD1.5 negative prompts
     │   │   ├── prompt_flux.md               # Additional notes/metadata
     │   │   ├── prompt_video.md              # Video prompts
+    │   │   ├── prompt_video_wan22.md        # Video prompts for Wan2.2 model
     │   │   └── prompt_florence.md           # Florence generated prompts
     ├── item_exampleB.png                    # PNG file (no PSD needed)
-    ├── item_exampleB/                       # Asset subfolder
+    ├── item_exampleB/                       # Item subfolder
     │   ├── prompt/                          # Prompt files subfolder
     │   │   ├── prompt_sdxl.md               # SDXL positive prompts
     │   │   ├── ...                          # continued
 
 TypeB Project Structure psds/pngs are in subfolders:
     project_folder/
-    ├── item_example/                        # Asset subfolder
+    ├── item_example/                        # Item subfolder
     │   ├── item_example.psd                 # Source PSD file (or .png)
     │   ├── prompt/                          # Prompt files subfolder
     │   │   ├── prompt_sdxl.md               # SDXL positive prompts
     │   │   ├── ...                          # continued
-    ├── item_exampleB/                       # Asset subfolder
+    ├── item_exampleB/                       # Item subfolder
     │   ├── item_exampleB.png                # PNG file (no PSD needed)
     │   ├── prompt/                          # Prompt files subfolder
     │   │   ├── prompt_sdxl.md               # SDXL positive prompts
+    │   │   ├── ...                          # continued
+
+TypeC Project Structure prompt-only (no PSD/PNG required):
+    project_folder/
+    ├── item_example/                        # Item subfolder (no PSD/PNG)
+    │   ├── prompt/                          # Prompt files subfolder
+    │   │   ├── prompt_sdxl.md               # SDXL positive prompts
+    │   │   ├── prompt_video_wan22.md        # Video prompts for Wan2.2 model
     │   │   ├── ...                          # continued
 
 FEATURES TODO :
@@ -48,7 +58,7 @@ FEATURES TODO :
 - [ ] add a button to multiply the strength of anythig with strength over 1 , to reduce 
 - [ ] add more "Simplify" prompt buttons such as = ( remove loras ) , deduplicate ( comma delimeter based)
 
-VERSION::20251029
+VERSION::20260124
 """
 
 import os
@@ -60,11 +70,12 @@ import re
 from PIL import Image
 import shutil
 import json
+import random
 
-class AssetDataEntryUI(tk.Tk):
+class ItemDataEntryUI(tk.Tk):
     def __init__(self, default_folder=""):
         super().__init__()
-        self.title("Asset Data Entry")
+        self.title("Item Data Entry")
         self.geometry("1600x800")  
 
         self.configure(bg="black")
@@ -87,6 +98,17 @@ class AssetDataEntryUI(tk.Tk):
 
         # Button style
         style.configure("TButton", background="#3c3c3c", foreground="white")
+        # Entry style - pure black background with white text
+        style.configure("TEntry", fieldbackground="black", foreground="white", insertcolor="white")
+        # Color-coded button styles by category
+        style.configure("Green.TButton", background="#2d4a3e", foreground="white")  # muted green - save/load
+        style.map("Green.TButton", foreground=[("active", "black")])
+        style.configure("Blue.TButton", background="#2d3e4a", foreground="white")   # muted blue - folder/generate
+        style.map("Blue.TButton", foreground=[("active", "black")])
+        style.configure("Purple.TButton", background="#3e2d4a", foreground="white") # muted purple - add/create
+        style.map("Purple.TButton", foreground=[("active", "black")])
+        # Project button palette for random assignment
+        self.project_btn_styles = ["Green.TButton", "Blue.TButton", "Purple.TButton"]
 
         # Store the folder in a StringVar so the user can change it via the UI
         self.folder_var = tk.StringVar(value=default_folder)
@@ -94,18 +116,20 @@ class AssetDataEntryUI(tk.Tk):
         # Optional secondary folder (e.g., "Upscale") for upscale structures
         self.secondary_folder_var = tk.StringVar(value="")
         self.selected_folder_filter = None # Current selected subfolder filter from folders panel (TypeB only)
+        # Folder name search filter
+        self.folder_search_var = tk.StringVar(value="")
 
         # StringVar for new entry name
         self.add_entry_var = tk.StringVar()
 
-        # A list to hold asset information
-        self.assets_data = []
+        # A list to hold item information
+        self.items_data = []
 
         # Store the active text field info
         self.active_text_widget = None
         self.active_text_label = None
         self.active_preview_image = None
-        self.active_asset = None
+        self.active_item = None  # Currently selected item data
         self.active_md_key = None
 
         # -------------------------------
@@ -119,8 +143,11 @@ class AssetDataEntryUI(tk.Tk):
         project_name_entry = ttk.Entry(row1, textvariable=self.project_name_var, width=18)
         project_name_entry.pack(side=tk.LEFT, padx=(0, 3))
         project_name_entry.insert(0, "ProjectName")
-        save_project_btn = ttk.Button(row1, text="Save Project", command=self.save_current_project_settings)
-        save_project_btn.pack(side=tk.LEFT, padx=(0, 10))
+        save_project_btn = ttk.Button(row1, text="Save Project", style="Green.TButton", command=self.save_current_project_settings)
+        save_project_btn.pack(side=tk.LEFT, padx=(0, 5))
+        # Vertical separator before quick project buttons
+        separator_label = ttk.Label(row1, text="|", foreground="#666666")
+        separator_label.pack(side=tk.LEFT, padx=(0, 5))
         self.saved_projects_frame = ttk.Frame(row1)
         self.saved_projects_frame.pack(side=tk.LEFT, padx=(0, 12))
         self.status_label = ttk.Label(row1, text="", foreground="#80ff80", background="black")
@@ -134,35 +161,39 @@ class AssetDataEntryUI(tk.Tk):
         label_input_folder.pack(side=tk.LEFT, padx=3)
         folder_entry = ttk.Entry(row2, textvariable=self.folder_var, width=50)
         folder_entry.pack(side=tk.LEFT, padx=3)
-        load_button = ttk.Button(row2, text="Load", command=self.on_load_folder)
+        load_button = ttk.Button(row2, text="Load", style="Blue.TButton", command=self.on_load_folder)
         load_button.pack(side=tk.LEFT, padx=3)
-        generate_button = ttk.Button(row2, text="Generate MD Files", command=self.on_generate_md_files)
+        generate_button = ttk.Button(row2, text="Generate MD Files", style="Blue.TButton", command=self.on_generate_md_files)
         generate_button.pack(side=tk.LEFT, padx=3)
-        # --- Row 2.5: Secondary folder (e.g., Upscale) ---
-        row2b = ttk.Frame(control_frame)
-        row2b.pack(side=tk.TOP, fill=tk.X, pady=2)
-        label_secondary = ttk.Label(row2b, text="Secondary folder:")
-        label_secondary.pack(side=tk.LEFT, padx=(3, 0))
-        secondary_entry = ttk.Entry(row2b, textvariable=self.secondary_folder_var, width=20)
+        # Secondary folder (e.g., Upscale) - on same row
+        label_secondary = ttk.Label(row2, text="Secondary:")
+        label_secondary.pack(side=tk.LEFT, padx=(10, 0))
+        secondary_entry = ttk.Entry(row2, textvariable=self.secondary_folder_var, width=14)
         secondary_entry.pack(side=tk.LEFT, padx=3)
         secondary_entry.bind("<Return>", lambda e: self.on_secondary_folder_changed())
-        use_upscale_btn = ttk.Button(row2b, text="Use Upscale", command=lambda: self._set_secondary_and_refresh("Upscale"))
+        use_upscale_btn = ttk.Button(row2, text="Upscale", style="Blue.TButton", command=lambda: self._set_secondary_and_refresh("Upscale"))
         use_upscale_btn.pack(side=tk.LEFT, padx=3)
+        # ADD entry field and button - on same row after Upscale
+        add_entry_field = ttk.Entry(row2, textvariable=self.add_entry_var, width=16)
+        add_entry_field.pack(side=tk.LEFT, padx=(10, 3))
+        add_entry_field.insert(0, "NewEntryName")
+        add_entry_button = ttk.Button(row2, text="ADD entry", style="Purple.TButton", command=self.on_add_entry)
+        add_entry_button.pack(side=tk.LEFT, padx=3)
 
-        # --- Row 3: Add entry, filter, structure ---
+        # --- Row 3: Search filter and checkboxes ---
         row3 = ttk.Frame(control_frame)
         row3.pack(side=tk.TOP, fill=tk.X, pady=2)
-        add_entry_field = ttk.Entry(row3, textvariable=self.add_entry_var, width=20)
-        add_entry_field.pack(side=tk.LEFT, padx=(20,3))
-        add_entry_field.insert(0, "NewEntryName")
-        add_entry_button = ttk.Button(row3, text="ADD entry", command=self.on_add_entry)
-        add_entry_button.pack(side=tk.LEFT, padx=3)
+        label_search = ttk.Label(row3, text="Search Filter:")
+        label_search.pack(side=tk.LEFT, padx=3)
+        search_entry = ttk.Entry(row3, textvariable=self.folder_search_var, width=14)
+        search_entry.pack(side=tk.LEFT, padx=3)
+        search_entry.bind("<KeyRelease>", lambda e: self._on_search_filter_changed())
         self.show_only_blank_var = tk.BooleanVar(value=False)
         filter_check = ttk.Checkbutton(
             row3,
-            text="Show only assets with blank prompts",
+            text="Show only items with blank prompts",
             variable=self.show_only_blank_var,
-            command=self.refresh_assets_display
+            command=self.refresh_items_display
         )
         filter_check.pack(side=tk.LEFT, padx=8)
         self.psds_in_root_var = tk.BooleanVar(value=True)
@@ -205,7 +236,7 @@ class AssetDataEntryUI(tk.Tk):
         header_frame = ttk.Frame(self.container_frame)
         header_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
         header_frame.grid_columnconfigure(0, minsize=self.table_preview_minsize_px)
-        for col in range(1, 8):
+        for col in range(1, 9):
             header_frame.grid_columnconfigure(col, minsize=self.table_text_col_minsize_px, uniform="prompt_cols")
 
         hdr_preview = ttk.Label(header_frame, text="", anchor="center", width=20)
@@ -229,8 +260,11 @@ class AssetDataEntryUI(tk.Tk):
         hdr_video = ttk.Label(header_frame, text="Video", anchor="center")
         hdr_video.grid(row=0, column=6, padx=0, sticky="ew")
 
+        hdr_video_wan22 = ttk.Label(header_frame, text="Video Wan22", anchor="center")
+        hdr_video_wan22.grid(row=0, column=7, padx=0, sticky="ew")
+
         hdr_florence = ttk.Label(header_frame, text="Florence", anchor="center")
-        hdr_florence.grid(row=0, column=7, sticky="ew")
+        hdr_florence.grid(row=0, column=8, sticky="ew")
 
         self.canvas = tk.Canvas(self.container_frame, bg="black", highlightthickness=0)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -269,11 +303,11 @@ class AssetDataEntryUI(tk.Tk):
         self.right_panel_content = ttk.Frame(self.right_panel)
         self.right_panel_content.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Asset name label at very top
-        self.active_asset_name_label = ttk.Label(self.right_panel_content, text="", font=("TkDefaultFont", 14, "bold"), foreground="#c0e0ff", background="black")
-        self.active_asset_name_label.pack(side=tk.TOP, pady=(5,0))
+        # Item name label at very top
+        self.active_item_name_label = ttk.Label(self.right_panel_content, text="", font=("TkDefaultFont", 14, "bold"), foreground="#c0e0ff", background="black")
+        self.active_item_name_label.pack(side=tk.TOP, pady=(5,0))
 
-        # Preview image below asset name
+        # Preview image below item name
         self.active_preview_label = ttk.Label(self.right_panel_content, text="")
         self.active_preview_label.pack(side=tk.TOP, pady=5)
 
@@ -294,6 +328,7 @@ class AssetDataEntryUI(tk.Tk):
             ("SD15 Negative", "sd15_neg"),
             ("Flux", "flux"),
             ("Video", "video"),
+            ("Video Wan22", "video_wan22"),
             ("Florence", "florence"),
         ]
         self.copy_to_menu = ttk.OptionMenu(self.right_panel_button_frame, self.copy_to_var, None, *[label for label, key in self.copy_to_options])
@@ -326,7 +361,7 @@ class AssetDataEntryUI(tk.Tk):
     # ------------------------------------------------------------------------
     def on_add_entry(self):
         """
-        Handle the ADD entry button: create new asset folder and stub .psd/.png files, then refresh UI.
+        Handle the ADD entry button: create new item folder and stub .psd/.png files, then refresh UI.
         """
         entry_name = self.add_entry_var.get().strip()
         if not entry_name:
@@ -371,6 +406,7 @@ class AssetDataEntryUI(tk.Tk):
             "prompt_sdxl_negative.md",
             "prompt_flux.md",
             "prompt_video.md",
+            "prompt_video_wan22.md",
             "prompt_florence.md"
         ]
         for md_file in md_files:
@@ -380,7 +416,7 @@ class AssetDataEntryUI(tk.Tk):
                     pass
         # Refresh UI
         self.scan_folder()
-        self.refresh_assets_display()
+        self.refresh_items_display()
         self.add_entry_var.set("")
 
     # ------------------------------------------------------------------------
@@ -438,7 +474,7 @@ class AssetDataEntryUI(tk.Tk):
             self.selected_folder_filter = None
             self.refresh_folders_panel()
             self.scan_folder()
-            self.refresh_assets_display()
+            self.refresh_items_display()
             self.show_status(f"Loaded settings from '{project_name}'", error=False)
         except Exception as e:
             self.show_status(f"Error loading settings: {str(e)}", error=True)
@@ -453,8 +489,10 @@ class AssetDataEntryUI(tk.Tk):
                 with open(self.settings_file, 'r', encoding='utf-8') as f:
                     all_settings = json.load(f)
                 for pname in all_settings.keys():
+                    # Randomly assign a color style from the palette
+                    btn_style = random.choice(self.project_btn_styles)
                     btn = ttk.Button(self.saved_projects_frame, text=pname, width=14,
-                        command=lambda n=pname: self.load_project_settings(n))
+                        style=btn_style, command=lambda n=pname: self.load_project_settings(n))
                     btn.pack(side=tk.LEFT, padx=2)
             except Exception:
                 pass
@@ -503,7 +541,7 @@ class AssetDataEntryUI(tk.Tk):
         self.selected_folder_filter = None  # reset filter when loading a new folder
         self.refresh_folders_panel()
         self.scan_folder()
-        self.refresh_assets_display()
+        self.refresh_items_display()
 
     def on_secondary_folder_changed(self):
         """Triggered when secondary folder text is confirmed (Enter)."""
@@ -511,21 +549,26 @@ class AssetDataEntryUI(tk.Tk):
         self.debug_print(f"on_secondary_folder_changed(): secondary='{self.secondary_folder_var.get().strip()}'")
         self.refresh_folders_panel()
         self.scan_folder()
-        self.refresh_assets_display()
+        self.refresh_items_display()
 
     def _set_secondary_and_refresh(self, value: str):
         self.secondary_folder_var.set(value)
         self.on_secondary_folder_changed()
+
+    def _on_search_filter_changed(self):
+        """Triggered when search filter text changes - refreshes both folders panel and items display."""
+        self.refresh_folders_panel()
+        self.refresh_items_display()
 
     def on_structure_toggle(self):
         """Handle switching between TypeA (root) and TypeB (subfolders)."""
         # Reset folder filter when structure changes
         self.selected_folder_filter = None
         self.debug_print(f"on_structure_toggle(): psds_in_root={self.psds_in_root_var.get()}")
-        # Refresh folders list and assets
+        # Refresh folders list and items
         self.refresh_folders_panel()
         self.scan_folder()
-        self.refresh_assets_display()
+        self.refresh_items_display()
 
     def refresh_folders_panel(self):
         """Populate the right-side folders list based on current settings.
@@ -555,6 +598,13 @@ class AssetDataEntryUI(tk.Tk):
             self.debug_print(f"refresh_folders_panel(): os.listdir error for '{parent}': {e}")
             return
         subfolders = [f for f in entries if os.path.isdir(os.path.join(parent, f))]
+        sec = self.secondary_folder_var.get().strip()
+        if sec:
+            subfolders = [f for f in subfolders if os.path.isdir(os.path.join(parent, f, sec))]
+        # Apply search filter (case-insensitive partial match)
+        search_text = self.folder_search_var.get().strip().lower()
+        if search_text:
+            subfolders = [f for f in subfolders if search_text in f.lower()]
         subfolders.sort()
         self.debug_print(f"refresh_folders_panel(): found {len(subfolders)} subfolders -> {subfolders}")
         for name in subfolders:
@@ -584,17 +634,25 @@ class AssetDataEntryUI(tk.Tk):
         if not self.input_folder or not os.path.isdir(self.input_folder):
             print("No valid folder loaded. Cannot generate MD files.")
             return
+
+        effective_root = self.input_folder
+        if self.psds_in_root_var.get():
+            sec = self.secondary_folder_var.get().strip()
+            if sec:
+                candidate = os.path.join(self.input_folder, sec)
+                if os.path.isdir(candidate):
+                    effective_root = candidate
         
         psd_files = [
-            f for f in os.listdir(self.input_folder)
-            if f.lower().endswith('.psd') and os.path.isfile(os.path.join(self.input_folder, f))
+            f for f in os.listdir(effective_root)
+            if f.lower().endswith('.psd') and os.path.isfile(os.path.join(effective_root, f))
         ]
 
         for psd_file in psd_files:
-            self.create_md_files_for_psd(psd_file, self.input_folder)
+            self.create_md_files_for_psd(psd_file, effective_root)
 
         self.scan_folder()
-        self.refresh_assets_display()
+        self.refresh_items_display()
 
     def create_md_files_for_psd(self, psd_file, directory):
         """
@@ -619,6 +677,7 @@ class AssetDataEntryUI(tk.Tk):
             "prompt_sdxl_negative.md",
             "prompt_flux.md",
             "prompt_video.md",
+            "prompt_video_wan22.md",
             "prompt_florence.md"
         ]
         
@@ -633,36 +692,44 @@ class AssetDataEntryUI(tk.Tk):
     def scan_folder(self):
         """Scan the input folder for .psd/.psb/.png files and gather relevant data."""
         self.debug_print("scan_folder() start")
-        self.assets_data = []
+        self.items_data = []
         
         if not self.input_folder or not os.path.isdir(self.input_folder):
             self.debug_print(f"scan_folder(): invalid base '{self.input_folder}'")
             return
 
+        effective_root = self.input_folder
+        if self.psds_in_root_var.get():
+            sec = self.secondary_folder_var.get().strip()
+            if sec:
+                candidate = os.path.join(self.input_folder, sec)
+                if os.path.isdir(candidate):
+                    effective_root = candidate
+
         if self.psds_in_root_var.get():  # TypeA: PSDs/PSBs/PNGs in root
             self.debug_print("scan_folder(): TypeA mode (PSDs in root)")
             # First, scan for PSD/PSB files
-            asset_files = [f for f in os.listdir(self.input_folder) if f.lower().endswith((".psd", ".psb"))]
-            asset_files.sort()
-            self.debug_print(f"scan_folder(): root psd/psb assets={len(asset_files)}")
+            item_files = [f for f in os.listdir(effective_root) if f.lower().endswith((".psd", ".psb"))]
+            item_files.sort()
+            self.debug_print(f"scan_folder(): root psd/psb items={len(item_files)}")
 
             processed_base_names = set()
-            for asset in asset_files:
-                base_name = os.path.splitext(asset)[0]
-                asset_path = os.path.join(self.input_folder, asset)
-                png_path = os.path.join(self.input_folder, base_name + ".png")
+            for item_file in item_files:
+                base_name = os.path.splitext(item_file)[0]
+                item_path = os.path.join(effective_root, item_file)
+                png_path = os.path.join(effective_root, base_name + ".png")
                 if not os.path.isfile(png_path):
                     png_path = None
 
-                subfolder_path = os.path.join(self.input_folder, base_name)
+                subfolder_path = os.path.join(effective_root, base_name)
                 if not os.path.isdir(subfolder_path):
                     continue
 
-                self._add_asset_data(base_name, asset_path, png_path, subfolder_path)
+                self._add_item_data(base_name, item_path, png_path, subfolder_path)
                 processed_base_names.add(base_name)
             
             # Now scan for standalone PNG files that don't have a PSD/PSB
-            all_files = os.listdir(self.input_folder)
+            all_files = os.listdir(effective_root)
             for filename in all_files:
                 if filename.lower().endswith(".png"):
                     base_name = os.path.splitext(filename)[0]
@@ -670,19 +737,36 @@ class AssetDataEntryUI(tk.Tk):
                     if base_name in processed_base_names:
                         continue
                     
-                    png_path = os.path.join(self.input_folder, filename)
-                    subfolder_path = os.path.join(self.input_folder, base_name)
+                    png_path = os.path.join(effective_root, filename)
+                    subfolder_path = os.path.join(effective_root, base_name)
                     # Only add if there's a matching subfolder with prompts
                     if os.path.isdir(subfolder_path):
-                        # Use PNG as the asset_path (no PSD exists)
-                        self._add_asset_data(base_name, png_path, png_path, subfolder_path)
-                        self.debug_print(f"scan_folder(): added PNG-only asset '{base_name}'")
+                        # Use PNG as the item_path (no PSD exists)
+                        self._add_item_data(base_name, png_path, png_path, subfolder_path)
+                        self.debug_print(f"scan_folder(): added PNG-only item '{base_name}'")
+            
+            # Now scan for folders with only a prompt subfolder (no PSD/PNG)
+            all_entries = os.listdir(effective_root)
+            for entry in all_entries:
+                entry_path = os.path.join(effective_root, entry)
+                if not os.path.isdir(entry_path):
+                    continue
+                # Skip if already processed
+                if entry in processed_base_names:
+                    continue
+                # Check if this folder has a prompt subfolder
+                prompt_subfolder = os.path.join(entry_path, "prompt")
+                if os.path.isdir(prompt_subfolder):
+                    # This is an ITEM folder with only prompts (no PSD/PNG)
+                    self._add_item_data(entry, None, None, entry_path)
+                    processed_base_names.add(entry)
+                    self.debug_print(f"scan_folder(): added prompt-only item '{entry}' (no PSD/PNG)")
 
         else:  # TypeB: PSDs/PSBs/PNGs in subfolders (with optional secondary folder)
             base_parent = self.input_folder
             sec = self.secondary_folder_var.get().strip()
             if not os.path.isdir(base_parent):
-                self.refresh_assets_display()
+                self.refresh_items_display()
                 return
 
             # Determine category subfolders under base_parent
@@ -692,6 +776,8 @@ class AssetDataEntryUI(tk.Tk):
             for subfolder in category_subfolders:
                 if self.selected_folder_filter and subfolder != self.selected_folder_filter:
                     continue
+
+                expected_base_name = subfolder
                 # If secondary folder is set (e.g., "Upscale"), look inside category/secondary
                 if sec:
                     target_folder = os.path.join(base_parent, subfolder, sec)
@@ -702,20 +788,19 @@ class AssetDataEntryUI(tk.Tk):
                     continue
 
                 # First, scan for PSD/PSB files
-                asset_files = [f for f in os.listdir(target_folder) if f.lower().endswith((".psd", ".psb"))]
+                item_files = [f for f in os.listdir(target_folder) if f.lower().endswith((".psd", ".psb"))]
                 processed_base_names = set()
-                parent_folder_name = os.path.basename(target_folder)
 
-                for asset in asset_files:
-                    base_name = os.path.splitext(asset)[0]
+                for item_file in item_files:
+                    base_name = os.path.splitext(item_file)[0]
                     
                     # FILTER: Only include PSD/PSB files whose base name matches the parent folder name
                     # e.g., in "fruit/apple/", only "apple.psd" should be shown, not "apple_art.psd"
-                    if base_name != parent_folder_name:
-                        self.debug_print(f"scan_folder(): skipping PSD/PSB '{asset}' - base_name '{base_name}' doesn't match folder '{parent_folder_name}'")
+                    if base_name != expected_base_name:
+                        self.debug_print(f"scan_folder(): skipping PSD/PSB '{item_file}' - base_name '{base_name}' doesn't match folder '{expected_base_name}'")
                         continue
                     
-                    asset_path = os.path.join(target_folder, asset)
+                    item_path = os.path.join(target_folder, item_file)
                     png_path = os.path.join(target_folder, base_name + ".png")
                     if not os.path.isfile(png_path):
                         png_path = None
@@ -729,7 +814,7 @@ class AssetDataEntryUI(tk.Tk):
                         subfolder_path = item_prompt_dir
                     else:
                         subfolder_path = target_folder
-                    self._add_asset_data(base_name, asset_path, png_path, subfolder_path)
+                    self._add_item_data(base_name, item_path, png_path, subfolder_path)
                     processed_base_names.add(base_name)
                 
                 # Now scan for standalone PNG files that don't have a PSD/PSB
@@ -743,9 +828,8 @@ class AssetDataEntryUI(tk.Tk):
                         
                         # FILTER: Only include PNG files whose base name matches the parent folder name
                         # e.g., in "fruit/apple/", only "apple.png" should be shown, not "apple_art.png"
-                        parent_folder_name = os.path.basename(target_folder)
-                        if base_name != parent_folder_name:
-                            self.debug_print(f"scan_folder(): skipping PNG '{filename}' - base_name '{base_name}' doesn't match folder '{parent_folder_name}'")
+                        if base_name != expected_base_name:
+                            self.debug_print(f"scan_folder(): skipping PNG '{filename}' - base_name '{base_name}' doesn't match folder '{expected_base_name}'")
                             continue
                         
                         png_path = os.path.join(target_folder, filename)
@@ -755,30 +839,40 @@ class AssetDataEntryUI(tk.Tk):
                         if os.path.isdir(item_prompt_dir) and os.path.isdir(item_prompt_folder):
                             # PNG in parent, prompts in subfolder (e.g., target/item.png + target/item/prompt/)
                             subfolder_path = item_prompt_dir
-                            self._add_asset_data(base_name, png_path, png_path, subfolder_path)
-                            self.debug_print(f"scan_folder(): added PNG-only asset '{base_name}' (PNG in parent, prompts in subfolder)")
+                            self._add_item_data(base_name, png_path, png_path, subfolder_path)
+                            self.debug_print(f"scan_folder(): added PNG-only item '{base_name}' (PNG in parent, prompts in subfolder)")
                         else:
                             # PNG in same folder as prompts (e.g., target/item.png + target/prompt/)
                             # Check if there's a prompt folder in target_folder
                             prompt_folder = os.path.join(target_folder, "prompt")
                             if os.path.isdir(prompt_folder):
                                 subfolder_path = target_folder
-                                self._add_asset_data(base_name, png_path, png_path, subfolder_path)
-                                self.debug_print(f"scan_folder(): added PNG-only asset '{base_name}' (PNG and prompts in same folder)")
+                                self._add_item_data(base_name, png_path, png_path, subfolder_path)
+                                self.debug_print(f"scan_folder(): added PNG-only item '{base_name}' (PNG and prompts in same folder)")
+                
+                # Now scan for folders with only a prompt subfolder (no PSD/PNG) - TypeB
+                # Check if target_folder itself has a prompt subfolder and no matching PSD/PNG was found
+                if expected_base_name not in processed_base_names:
+                    prompt_subfolder = os.path.join(target_folder, "prompt")
+                    if os.path.isdir(prompt_subfolder):
+                        # This is an ITEM folder with only prompts (no PSD/PNG)
+                        self._add_item_data(expected_base_name, None, None, target_folder)
+                        processed_base_names.add(expected_base_name)
+                        self.debug_print(f"scan_folder(): added prompt-only item '{expected_base_name}' (no PSD/PNG) - TypeB")
                     
-        self.refresh_assets_display()
+        self.refresh_items_display()
 
-    def _add_asset_data(self, base_name, psd_path, png_path, subfolder_path):
-        """Helper method to add asset data to self.assets_data"""
+    def _add_item_data(self, base_name, psd_path, png_path, subfolder_path):
+        """Helper method to add item data to self.items_data"""
         # Create path to prompt folder 
         prompt_folder = os.path.join(subfolder_path, "prompt")
         if not os.path.isdir(prompt_folder):
             alt_prompt_folder = os.path.join(subfolder_path, "prompts")
             if os.path.isdir(alt_prompt_folder):
-                self.debug_print(f"_add_asset_data('{base_name}'): using fallback prompt folder '{alt_prompt_folder}'")
+                self.debug_print(f"_add_item_data('{base_name}'): using fallback prompt folder '{alt_prompt_folder}'")
                 prompt_folder = alt_prompt_folder
             else:
-                self.debug_print(f"_add_asset_data('{base_name}'): prompt folder missing under '{subfolder_path}'")
+                self.debug_print(f"_add_item_data('{base_name}'): prompt folder missing under '{subfolder_path}'")
         
         # Identify potential .md files
         prompt_sdxl_path = os.path.join(prompt_folder, "prompt_sdxl.md")
@@ -787,6 +881,7 @@ class AssetDataEntryUI(tk.Tk):
         prompt_sd15_neg_path = os.path.join(prompt_folder, "prompt_sd15_negative.md")
         prompt_flux_path = os.path.join(prompt_folder, "prompt_flux.md")
         prompt_video_path = os.path.join(prompt_folder, "prompt_video.md")
+        prompt_video_wan22_path = os.path.join(prompt_folder, "prompt_video_wan22.md")
         prompt_florence_path = os.path.join(prompt_folder, "prompt_florence.md")
 
         # Read existing content
@@ -795,51 +890,58 @@ class AssetDataEntryUI(tk.Tk):
             with open(prompt_sdxl_path, "r", encoding="utf-8") as f:
                 prompt_sdxl_content = f.read()
         else:
-            self.debug_print(f"_add_asset_data('{base_name}'): missing {prompt_sdxl_path}")
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_sdxl_path}")
         
         prompt_sdxl_neg_content = ""
         if os.path.isfile(prompt_sdxl_neg_path):
             with open(prompt_sdxl_neg_path, "r", encoding="utf-8") as f:
                 prompt_sdxl_neg_content = f.read()
         else:
-            self.debug_print(f"_add_asset_data('{base_name}'): missing {prompt_sdxl_neg_path}")
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_sdxl_neg_path}")
 
         prompt_sd15_content = ""
         if os.path.isfile(prompt_sd15_path):
             with open(prompt_sd15_path, "r", encoding="utf-8") as f:
                 prompt_sd15_content = f.read()
         else:
-            self.debug_print(f"_add_asset_data('{base_name}'): missing {prompt_sd15_path}")
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_sd15_path}")
         
         prompt_sd15_neg_content = ""
         if os.path.isfile(prompt_sd15_neg_path):
             with open(prompt_sd15_neg_path, "r", encoding="utf-8") as f:
                 prompt_sd15_neg_content = f.read()
         else:
-            self.debug_print(f"_add_asset_data('{base_name}'): missing {prompt_sd15_neg_path}")
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_sd15_neg_path}")
 
         prompt_flux_content = ""
         if os.path.isfile(prompt_flux_path):
             with open(prompt_flux_path, "r", encoding="utf-8") as f:
                 prompt_flux_content = f.read()
         else:
-            self.debug_print(f"_add_asset_data('{base_name}'): missing {prompt_flux_path}")
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_flux_path}")
 
         prompt_video_content = ""
         if os.path.isfile(prompt_video_path):
             with open(prompt_video_path, "r", encoding="utf-8") as f:
                 prompt_video_content = f.read()
         else:
-            self.debug_print(f"_add_asset_data('{base_name}'): missing {prompt_video_path}")
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_video_path}")
+
+        prompt_video_wan22_content = ""
+        if os.path.isfile(prompt_video_wan22_path):
+            with open(prompt_video_wan22_path, "r", encoding="utf-8") as f:
+                prompt_video_wan22_content = f.read()
+        else:
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_video_wan22_path}")
 
         prompt_florence_content = ""
         if os.path.isfile(prompt_florence_path):
             with open(prompt_florence_path, "r", encoding="utf-8") as f:
                 prompt_florence_content = f.read()
         else:
-            self.debug_print(f"_add_asset_data('{base_name}'): missing {prompt_florence_path}")
+            self.debug_print(f"_add_item_data('{base_name}'): missing {prompt_florence_path}")
 
-        self.assets_data.append({
+        self.items_data.append({
             "base_name": base_name,
             "psd_path": psd_path,
             "png_path": png_path,
@@ -852,6 +954,7 @@ class AssetDataEntryUI(tk.Tk):
             "prompt_sd15_neg_path": prompt_sd15_neg_path,
             "prompt_flux_path": prompt_flux_path,
             "prompt_video_path": prompt_video_path,
+            "prompt_video_wan22_path": prompt_video_wan22_path,
             "prompt_florence_path": prompt_florence_path,
 
             # File content
@@ -861,27 +964,34 @@ class AssetDataEntryUI(tk.Tk):
             "prompt_sd15_neg_content": prompt_sd15_neg_content,
             "prompt_flux_content": prompt_flux_content,
             "prompt_video_content": prompt_video_content,
+            "prompt_video_wan22_content": prompt_video_wan22_content,
             "prompt_florence_content": prompt_florence_content,
         })
 
-    def refresh_assets_display(self):
-        """Clear and rebuild the list of assets in the scrollable frame."""
+    def refresh_items_display(self):
+        """Clear and rebuild the list of items in the scrollable frame."""
         for child in self.items_frame.winfo_children():
             child.destroy()
 
         show_only_blank = self.show_only_blank_var.get()
+        # Search filter for item folder names (case-insensitive partial match)
+        search_text = self.folder_search_var.get().strip().lower()
 
         row_index = 0
-        for asset in self.assets_data:
+        for item in self.items_data:
+            # Apply search filter on item folder name
+            if search_text and search_text not in item["base_name"].lower():
+                continue
             # If filter is ON, skip if any content is non-empty
             if show_only_blank:
-                if (asset["prompt_sdxl_content"].strip() or
-                    asset["prompt_sdxl_neg_content"].strip() or
-                    asset["prompt_sd15_content"].strip() or
-                    asset["prompt_sd15_neg_content"].strip() or
-                    asset["prompt_flux_content"].strip() or
-                    asset["prompt_video_content"].strip() or
-                    asset["prompt_florence_content"].strip()):
+                if (item["prompt_sdxl_content"].strip() or
+                    item["prompt_sdxl_neg_content"].strip() or
+                    item["prompt_sd15_content"].strip() or
+                    item["prompt_sd15_neg_content"].strip() or
+                    item["prompt_flux_content"].strip() or
+                    item["prompt_video_content"].strip() or
+                    item["prompt_video_wan22_content"].strip() or
+                    item["prompt_florence_content"].strip()):
                     continue
             
             row_frame = ttk.Frame(self.items_frame)
@@ -889,12 +999,12 @@ class AssetDataEntryUI(tk.Tk):
             row_index += 1
 
             # Base name label at top
-            base_name_label = ttk.Label(row_frame, text=asset["base_name"], anchor="w", font=("TkDefaultFont", 10, "bold"))
-            base_name_label.grid(row=0, column=0, columnspan=8, sticky="w", padx=5, pady=(2,0))
+            base_name_label = ttk.Label(row_frame, text=item["base_name"], anchor="w", font=("TkDefaultFont", 10, "bold"))
+            base_name_label.grid(row=0, column=0, columnspan=9, sticky="w", padx=5, pady=(2,0))
 
             # Create a frame for the image and content side by side
             content_container = ttk.Frame(row_frame)
-            content_container.grid(row=1, column=0, columnspan=8, sticky="ew", pady=2)
+            content_container.grid(row=1, column=0, columnspan=9, sticky="ew", pady=2)
 
             content_container.grid_columnconfigure(0, minsize=self.table_preview_minsize_px)
             content_container.grid_columnconfigure(1, weight=1)
@@ -903,118 +1013,131 @@ class AssetDataEntryUI(tk.Tk):
             thumb_container.grid(row=0, column=0, padx=(5, 10), pady=2, sticky="nw")
 
             # Thumbnail on the left
-            if asset["png_path"] and os.path.isfile(asset["png_path"]):
+            if item["png_path"] and os.path.isfile(item["png_path"]):
                 try:
-                    img = Image.open(asset["png_path"])
+                    img = Image.open(item["png_path"])
                     img.thumbnail((128, 128), Image.LANCZOS)
                     photo = ImageTk.PhotoImage(img)
                     label_img = ttk.Label(thumb_container, image=photo)
                     label_img.image = photo  # keep reference
                     label_img.grid(row=0, column=0, sticky="nw")
                 except Exception as e:
-                    print(f"Error loading image {asset['png_path']}: {e}")
+                    print(f"Error loading image {item['png_path']}: {e}")
 
             # Content frame for text fields to the right of the image
             content_frame = ttk.Frame(content_container)
             content_frame.grid(row=0, column=1, sticky="ew")
-            for col in range(0, 7):
+            for col in range(0, 8):
                 content_frame.grid_columnconfigure(col, minsize=self.table_text_col_minsize_px, uniform="prompt_cols")
 
             # SDXL Positive prompt - slight green tint
             prompt_text_sdxl = tk.Text(content_frame, width=25, height=6, bg="#2a332a", fg="white", font=self.table_text_font)
-            prompt_text_sdxl.insert("1.0", asset["prompt_sdxl_content"])
+            prompt_text_sdxl.insert("1.0", item["prompt_sdxl_content"])
             prompt_text_sdxl.grid(row=0, column=0, sticky="nsew", padx=0, pady=1)
             prompt_text_sdxl.bind("<KeyRelease>", 
-                lambda e, a=asset, tw=prompt_text_sdxl, key="sdxl_pos": 
+                lambda e, a=item, tw=prompt_text_sdxl, key="sdxl_pos": 
                     self.on_text_change(a, tw, key)
             )
             prompt_text_sdxl.bind("<FocusIn>",
-                lambda e, tw=prompt_text_sdxl, label="SDXL Positive", a=asset, key="sdxl_pos":
+                lambda e, tw=prompt_text_sdxl, label="SDXL Positive", a=item, key="sdxl_pos":
                     self.on_text_field_focus(tw, label, a, key)
             )
 
             # SDXL Negative prompt - slight red tint
             neg_prompt_text_sdxl = tk.Text(content_frame, width=25, height=6, bg="#332a2a", fg="white", font=self.table_text_font)
-            neg_prompt_text_sdxl.insert("1.0", asset["prompt_sdxl_neg_content"])
+            neg_prompt_text_sdxl.insert("1.0", item["prompt_sdxl_neg_content"])
             neg_prompt_text_sdxl.grid(row=0, column=1, sticky="nsew", padx=0, pady=1)
             neg_prompt_text_sdxl.bind("<KeyRelease>",
-                lambda e, a=asset, tw=neg_prompt_text_sdxl, key="sdxl_neg":
+                lambda e, a=item, tw=neg_prompt_text_sdxl, key="sdxl_neg":
                     self.on_text_change(a, tw, key)
             )
             neg_prompt_text_sdxl.bind("<FocusIn>",
-                lambda e, tw=neg_prompt_text_sdxl, label="SDXL Negative", a=asset, key="sdxl_neg":
+                lambda e, tw=neg_prompt_text_sdxl, label="SDXL Negative", a=item, key="sdxl_neg":
                     self.on_text_field_focus(tw, label, a, key)
             )
 
             # SD15 Positive prompt - slight green tint
             prompt_text_sd15 = tk.Text(content_frame, width=25, height=6, bg="#2a332a", fg="white", font=self.table_text_font)
-            prompt_text_sd15.insert("1.0", asset["prompt_sd15_content"])
+            prompt_text_sd15.insert("1.0", item["prompt_sd15_content"])
             prompt_text_sd15.grid(row=0, column=2, sticky="nsew", padx=0, pady=1)
             prompt_text_sd15.bind("<KeyRelease>",
-                lambda e, a=asset, tw=prompt_text_sd15, key="sd15_pos":
+                lambda e, a=item, tw=prompt_text_sd15, key="sd15_pos":
                     self.on_text_change(a, tw, key)
             )
             prompt_text_sd15.bind("<FocusIn>",
-                lambda e, tw=prompt_text_sd15, label="SD15 Positive", a=asset, key="sd15_pos":
+                lambda e, tw=prompt_text_sd15, label="SD15 Positive", a=item, key="sd15_pos":
                     self.on_text_field_focus(tw, label, a, key)
             )
 
             # SD15 Negative prompt - slight red tint
             neg_prompt_text_sd15 = tk.Text(content_frame, width=25, height=6, bg="#332a2a", fg="white", font=self.table_text_font)
-            neg_prompt_text_sd15.insert("1.0", asset["prompt_sd15_neg_content"])
+            neg_prompt_text_sd15.insert("1.0", item["prompt_sd15_neg_content"])
             neg_prompt_text_sd15.grid(row=0, column=3, sticky="nsew", padx=0, pady=1)
             neg_prompt_text_sd15.bind("<KeyRelease>",
-                lambda e, a=asset, tw=neg_prompt_text_sd15, key="sd15_neg":
+                lambda e, a=item, tw=neg_prompt_text_sd15, key="sd15_neg":
                     self.on_text_change(a, tw, key)
             )
             neg_prompt_text_sd15.bind("<FocusIn>",
-                lambda e, tw=neg_prompt_text_sd15, label="SD15 Negative", a=asset, key="sd15_neg":
+                lambda e, tw=neg_prompt_text_sd15, label="SD15 Negative", a=item, key="sd15_neg":
                     self.on_text_field_focus(tw, label, a, key)
             )
 
             # Flux prompt - neutral dark gray
             prompt_text_flux = tk.Text(content_frame, width=25, height=6, bg="#2d2d2d", fg="white", font=self.table_text_font)
-            prompt_text_flux.insert("1.0", asset["prompt_flux_content"])
+            prompt_text_flux.insert("1.0", item["prompt_flux_content"])
             prompt_text_flux.grid(row=0, column=4, sticky="nsew", padx=0, pady=1)
             prompt_text_flux.bind("<KeyRelease>",
-                lambda e, a=asset, tw=prompt_text_flux, key="flux":
+                lambda e, a=item, tw=prompt_text_flux, key="flux":
                     self.on_text_change(a, tw, key)
             )
             prompt_text_flux.bind("<FocusIn>",
-                lambda e, tw=prompt_text_flux, label="Flux", a=asset, key="flux":
+                lambda e, tw=prompt_text_flux, label="Flux", a=item, key="flux":
                     self.on_text_field_focus(tw, label, a, key)
             )
 
             # Video prompt - neutral dark gray
             prompt_text_video = tk.Text(content_frame, width=25, height=6, bg="#2d2d2d", fg="white", font=self.table_text_font)
-            prompt_text_video.insert("1.0", asset["prompt_video_content"])
+            prompt_text_video.insert("1.0", item["prompt_video_content"])
             prompt_text_video.grid(row=0, column=5, sticky="nsew", padx=0, pady=1)
             prompt_text_video.bind("<KeyRelease>",
-                lambda e, a=asset, tw=prompt_text_video, key="video":
+                lambda e, a=item, tw=prompt_text_video, key="video":
                     self.on_text_change(a, tw, key)
             )
             prompt_text_video.bind("<FocusIn>",
-                lambda e, tw=prompt_text_video, label="Video", a=asset, key="video":
+                lambda e, tw=prompt_text_video, label="Video", a=item, key="video":
+                    self.on_text_field_focus(tw, label, a, key)
+            )
+
+            # Video Wan22 prompt - muted purple tint
+            prompt_text_video_wan22 = tk.Text(content_frame, width=25, height=6, bg="#2d2a33", fg="white", font=self.table_text_font)
+            prompt_text_video_wan22.insert("1.0", item["prompt_video_wan22_content"])
+            prompt_text_video_wan22.grid(row=0, column=6, sticky="nsew", padx=0, pady=1)
+            prompt_text_video_wan22.bind("<KeyRelease>",
+                lambda e, a=item, tw=prompt_text_video_wan22, key="video_wan22":
+                    self.on_text_change(a, tw, key)
+            )
+            prompt_text_video_wan22.bind("<FocusIn>",
+                lambda e, tw=prompt_text_video_wan22, label="Video Wan22", a=item, key="video_wan22":
                     self.on_text_field_focus(tw, label, a, key)
             )
 
             # Florence prompt - neutral dark gray
             prompt_text_florence = tk.Text(content_frame, width=25, height=6, bg="#2d2d2d", fg="white", font=self.table_text_font)
-            prompt_text_florence.insert("1.0", asset["prompt_florence_content"])
-            prompt_text_florence.grid(row=0, column=6, sticky="nsew", padx=0, pady=1)
+            prompt_text_florence.insert("1.0", item["prompt_florence_content"])
+            prompt_text_florence.grid(row=0, column=7, sticky="nsew", padx=0, pady=1)
             prompt_text_florence.bind("<KeyRelease>",
-                lambda e, a=asset, tw=prompt_text_florence, key="florence":
+                lambda e, a=item, tw=prompt_text_florence, key="florence":
                     self.on_text_change(a, tw, key)
             )
             prompt_text_florence.bind("<FocusIn>",
-                lambda e, tw=prompt_text_florence, label="Florence", a=asset, key="florence":
+                lambda e, tw=prompt_text_florence, label="Florence", a=item, key="florence":
                     self.on_text_field_focus(tw, label, a, key)
             )
 
         self.items_frame.update_idletasks()
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
-    def on_text_change(self, asset, text_widget, md_key):
+    def on_text_change(self, item, text_widget, md_key):
         """
         Handle changes in the text widgets and save automatically.
         md_key is one of: 'sdxl_pos', 'sdxl_neg', 'sd15_pos', 'sd15_neg', 'flux', 'video', 'florence'.
@@ -1022,26 +1145,29 @@ class AssetDataEntryUI(tk.Tk):
         new_content = text_widget.get("1.0", tk.END).rstrip("\n")
 
         if md_key == "sdxl_pos":
-            asset["prompt_sdxl_content"] = new_content
-            file_path = asset["prompt_sdxl_path"]
+            item["prompt_sdxl_content"] = new_content
+            file_path = item["prompt_sdxl_path"]
         elif md_key == "sdxl_neg":
-            asset["prompt_sdxl_neg_content"] = new_content
-            file_path = asset["prompt_sdxl_neg_path"]
+            item["prompt_sdxl_neg_content"] = new_content
+            file_path = item["prompt_sdxl_neg_path"]
         elif md_key == "sd15_pos":
-            asset["prompt_sd15_content"] = new_content
-            file_path = asset["prompt_sd15_path"]
+            item["prompt_sd15_content"] = new_content
+            file_path = item["prompt_sd15_path"]
         elif md_key == "sd15_neg":
-            asset["prompt_sd15_neg_content"] = new_content
-            file_path = asset["prompt_sd15_neg_path"]
+            item["prompt_sd15_neg_content"] = new_content
+            file_path = item["prompt_sd15_neg_path"]
         elif md_key == "flux":
-            asset["prompt_flux_content"] = new_content
-            file_path = asset["prompt_flux_path"]
+            item["prompt_flux_content"] = new_content
+            file_path = item["prompt_flux_path"]
         elif md_key == "video":
-            asset["prompt_video_content"] = new_content
-            file_path = asset["prompt_video_path"]
+            item["prompt_video_content"] = new_content
+            file_path = item["prompt_video_path"]
+        elif md_key == "video_wan22":
+            item["prompt_video_wan22_content"] = new_content
+            file_path = item["prompt_video_wan22_path"]
         elif md_key == "florence":
-            asset["prompt_florence_content"] = new_content
-            file_path = asset["prompt_florence_path"]
+            item["prompt_florence_content"] = new_content
+            file_path = item["prompt_florence_path"]
 
         # Ensure the directory structure exists
         directory = os.path.dirname(file_path)
@@ -1052,19 +1178,19 @@ class AssetDataEntryUI(tk.Tk):
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
 
-    def on_text_field_focus(self, text_widget, label_text, asset, md_key):
+    def on_text_field_focus(self, text_widget, label_text, item, md_key):
         """Handle when a text field gains focus"""
         # Update active field tracking
         self.active_text_widget = text_widget
         self.active_text_label = label_text
-        self.active_asset = asset
+        self.active_item = item
         self.active_md_key = md_key
 
         # Show the right panel
         self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, padx=10, pady=5)
         
-        # Update the asset name label
-        self.active_asset_name_label.config(text=asset.get("base_name", ""))
+        # Update the item name label
+        self.active_item_name_label.config(text=item.get("base_name", ""))
 
         # Update the label
         self.active_field_label.config(text=label_text)
@@ -1074,9 +1200,9 @@ class AssetDataEntryUI(tk.Tk):
         self.active_text_area.insert("1.0", text_widget.get("1.0", tk.END).rstrip("\n"))
 
         # Update preview image
-        if asset["png_path"] and os.path.isfile(asset["png_path"]):
+        if item["png_path"] and os.path.isfile(item["png_path"]):
             try:
-                img = Image.open(asset["png_path"])
+                img = Image.open(item["png_path"])
                 img.thumbnail((256, 256), Image.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
                 self.active_preview_label.config(image=photo)
@@ -1103,20 +1229,20 @@ class AssetDataEntryUI(tk.Tk):
 
     def on_active_text_change(self, event):
         """Handle changes in the active text area"""
-        if self.active_text_widget and self.active_asset:
+        if self.active_text_widget and self.active_item:
             # Update both text widgets
             new_content = self.active_text_area.get("1.0", tk.END).rstrip("\n")
             self.active_text_widget.delete("1.0", tk.END)
             self.active_text_widget.insert("1.0", new_content)
             
             # Save the changes
-            self.on_text_change(self.active_asset, self.active_text_widget, self.active_md_key)
+            self.on_text_change(self.active_item, self.active_text_widget, self.active_md_key)
 
     def copy_active_text_to_field(self):
-        """Copy the active text area content to the selected prompt field for the same asset.
+        """Copy the active text area content to the selected prompt field for the same item.
         When copying from flux to sdxl, remove <lora:...> tags as they are not compatible.
         Also update the UI for the copied-to field if visible."""
-        if not self.active_asset or not self.active_md_key:
+        if not self.active_item or not self.active_md_key:
             return
         # Get selected label and key
         selected_label = self.copy_to_var.get()
@@ -1130,7 +1256,7 @@ class AssetDataEntryUI(tk.Tk):
         # Remove <lora:...> tags
         content = re.sub(r"<lora:[^>]+>", "", content, flags=re.IGNORECASE)
         # Do NOT normalize whitespace or strip; preserve all original newlines and spacing
-        # Map key to asset field and file path
+        # Map key to item field and file path
         field_map = {
             "sdxl_pos": ("prompt_sdxl_content", "prompt_sdxl_path"),
             "sdxl_neg": ("prompt_sdxl_neg_content", "prompt_sdxl_neg_path"),
@@ -1138,12 +1264,13 @@ class AssetDataEntryUI(tk.Tk):
             "sd15_neg": ("prompt_sd15_neg_content", "prompt_sd15_neg_path"),
             "flux": ("prompt_flux_content", "prompt_flux_path"),
             "video": ("prompt_video_content", "prompt_video_path"),
+            "video_wan22": ("prompt_video_wan22_content", "prompt_video_wan22_path"),
             "florence": ("prompt_florence_content", "prompt_florence_path"),
         }
         field_name, file_path_name = field_map[target_key]
-        # Update asset data
-        self.active_asset[field_name] = content
-        file_path = self.active_asset[file_path_name]
+        # Update item data
+        self.active_item[field_name] = content
+        file_path = self.active_item[file_path_name]
         # Save to disk
         directory = os.path.dirname(file_path)
         if not os.path.isdir(directory):
@@ -1152,10 +1279,10 @@ class AssetDataEntryUI(tk.Tk):
             f.write(content)
 
         # Update the main table's text widget for the target field if visible
-        # Try to find the widget: loop through items_frame for this asset and key
+        # Try to find the widget: loop through items_frame for this item and key
         if hasattr(self, 'items_frame'):
             for row in self.items_frame.winfo_children():
-                # Find the row for this asset
+                # Find the row for this item
                 for child in row.winfo_children():
                     # Find the content_container frame
                     if isinstance(child, ttk.Frame):
@@ -1163,13 +1290,13 @@ class AssetDataEntryUI(tk.Tk):
                             # Find the prompt text widgets
                             if isinstance(content_frame, ttk.Frame):
                                 text_widgets = content_frame.winfo_children()
-                                key_order = ["sdxl_pos", "sdxl_neg", "sd15_pos", "sd15_neg", "flux", "video", "florence"]
+                                key_order = ["sdxl_pos", "sdxl_neg", "sd15_pos", "sd15_neg", "flux", "video", "video_wan22", "florence"]
                                 for idx, key in enumerate(key_order):
                                     if key == target_key:
                                         try:
-                                            # Check if this row is for the active asset
+                                            # Check if this row is for the active item
                                             base_name_label = row.winfo_children()[0]
-                                            if base_name_label.cget("text") == self.active_asset.get("base_name", ""):
+                                            if base_name_label.cget("text") == self.active_item.get("base_name", ""):
                                                 tw = text_widgets[idx]
                                                 tw.delete("1.0", tk.END)
                                                 tw.insert("1.0", content)
@@ -1182,7 +1309,7 @@ class AssetDataEntryUI(tk.Tk):
 
     def simplify_active_prompt(self):
         """Remove all (word:number) patterns from the currently selected prompt and save."""
-        if not self.active_text_area or not self.active_asset or not self.active_md_key:
+        if not self.active_text_area or not self.active_item or not self.active_md_key:
             return
         content = self.active_text_area.get("1.0", tk.END)
         # Remove patterns like (berry:1.3) or (word:0.9)
@@ -1194,12 +1321,12 @@ class AssetDataEntryUI(tk.Tk):
         if self.active_text_widget:
             self.active_text_widget.delete("1.0", tk.END)
             self.active_text_widget.insert("1.0", simplified.strip())
-        # Save to disk and update asset data
+        # Save to disk and update item data
         self.on_active_text_change(None)
 
 def main():
     default_folder = r"/path/to/your/project"
-    app = AssetDataEntryUI(default_folder)
+    app = ItemDataEntryUI(default_folder)
     app.mainloop()
 
 if __name__ == "__main__":
